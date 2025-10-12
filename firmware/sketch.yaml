@@ -1,0 +1,5 @@
+default_fqbn: Heltec-esp32:esp32:heltec_wireless_tracker
+default_port: /dev/ttyACM0
+default_port_config:
+  baudrate: 115200
+default_protocol: serial
