@@ -40,9 +40,6 @@ uint8_t confirmedNbTrials = 4;
 
 TinyGPSPlus GPS;
 
-static bool waiting_for_gps = true;
-static uint32_t next_gps_retry_ms = 0;
-
 static inline int deg_to_e7(double d) {
   return (d >= 0) ? (int)(d * 1e7 + 0.5) : (int)(d * 1e7 - 0.5);
 }
@@ -63,10 +60,6 @@ static void gps_feed() {
   }
 }
 
-static bool gps_ready() {
-  return GPS.location.lat() != 0 && GPS.location.lng() != 0;
-}
-
 /* -------------------- Simulated water characteristics -------------------- */
 static int g_flow_dir_deg = 90;
 static int g_water_level_mm = 120;
@@ -83,68 +76,78 @@ void simulator() {
 }
 
 /* -------------------- Payload builder (big-endian) -------------------- */
-static void put_u16_be(uint16_t v) {
-  appData[appDataSize++] = (v >> 8) & 0xFF;
-  appData[appDataSize++] = v & 0xFF;
-}
 
-static void put_i16_be(int16_t v) {
-  put_u16_be((uint16_t)v);
-}
+static int prepareTxFrame(uint8_t port)
+{
+    simulator();
 
-static int put_i32_be(int32_t v) {
-  appData[appDataSize++] = (v >> 24) & 0xFF;
-  appData[appDataSize++] = (v >> 16) & 0xFF;
-  appData[appDataSize++] = (v >> 8) & 0xFF;
-  appData[appDataSize++] = (v) & 0xFF;
-}
+    // ------ Collect simulated values and clamp ---------------------------
+    uint32_t raw_dir   = (uint32_t)g_flow_dir_deg;      // will clamp to [0..65535]
+    uint32_t raw_level = (uint32_t)g_water_level_mm;    // will clamp to [0..65535]
+    int32_t  raw_tc100 = (int32_t)g_water_temp_c_x100;  // will clamp to [-32768..32767]
 
-static int prepareTxFrame(uint8_t port) {
-  simulator();
+    uint16_t dir_deg   = (raw_dir   > 65535u) ? 65535u : (uint16_t)raw_dir;
+    uint16_t level_mm  = (raw_level > 65535u) ? 65535u : (uint16_t)raw_level;
 
-  if (!gps_ready()) {  // If still no valid coords
-    prepareTxFrame(port);
-  }
-  waiting_for_gps = false;  // Stop waiting for valid coords
+    // Temp guard, in case random is too much
+    int16_t temp_cx100;
+    if (raw_tc100 >  32767) temp_cx100 =  32767;
+    else if (raw_tc100 < -32768) temp_cx100 = -32768;
+    else temp_cx100 = (int16_t)raw_tc100;
 
-  int32_t latE7 = deg_to_e7(GPS.location.lat());
-  int32_t lonE7 = deg_to_e7(GPS.location.lng());
+    double lat = GPS.location.lat();
+    double lon = GPS.location.lng();
 
-  uint16_t dir_deg = (uint16_t)g_flow_dir_deg;
-  uint16_t level_mm = (uint16_t)g_water_level_mm;
-  int16_t temp_cx100 = (int16_t)g_water_temp_c_x100;
+    // --- required size & bounds check ----------------------------
+    const size_t NEED = (2 + 2 + 2) + (8 + 8); // 3*u16 + 2*double = 22 bytes
+    const size_t CAP  = sizeof(appData);
+    if (NEED > CAP) {
+        // Not enough buffer space
+        return -1;
+    }
 
-  appDataSize = 0;
-  put_u16_be(dir_deg);
-  put_u16_be(level_mm);
-  put_i16_be(temp_cx100);
-  put_i32_be(latE7);
-  put_i32_be(lonE7);
+    // --- encode (big-endian) -----------------------------------------------------
+    uint8_t *p = appData;
 
-  Serial.print("Flow=");
-  Serial.print(dir_deg);
-  Serial.print(" deg, Level=");
-  Serial.print(level_mm);
-  Serial.print(" mm, Temp=");
-  Serial.print(temp_cx100 / 100.0, 2);
-  Serial.print(" C, TX_LAT=");
-  Serial.print(latE7 / 1e7, 7);
-  Serial.print(", TX_LON=");
-  Serial.println(lonE7 / 1e7, 7);
-}
+    // u16 BE: dir
+    *p++ = (uint8_t)((dir_deg  >> 8) & 0xFF);
+    *p++ = (uint8_t)( dir_deg        & 0xFF);
 
-static void dumpUplink(const uint8_t *buf, size_t len, uint8_t port) {
-  Serial.print("[Uplink] port=");
-  Serial.print(port);
-  Serial.print(" len=");
-  Serial.println(len);
-  Serial.print("HEX: ");
-  for (size_t i = 0; i < len; ++i) {
-    if (i) Serial.print(' ');
-    if (buf[i] < 16) Serial.print('0');
-    Serial.print(buf[i], HEX);
-  }
-  Serial.println();
+    // u16 BE: level
+    *p++ = (uint8_t)((level_mm >> 8) & 0xFF);
+    *p++ = (uint8_t)( level_mm       & 0xFF);
+
+    // i16 BE: temp x100
+    *p++ = (uint8_t)(((uint16_t)temp_cx100 >> 8) & 0xFF);
+    *p++ = (uint8_t)( (uint16_t)temp_cx100       & 0xFF);
+
+    // double BE: lat
+    {
+        uint8_t tmp[8];
+        memcpy(tmp, &lat, 8);
+        *p++ = tmp[7]; *p++ = tmp[6]; *p++ = tmp[5]; *p++ = tmp[4];
+        *p++ = tmp[3]; *p++ = tmp[2]; *p++ = tmp[1]; *p++ = tmp[0];
+    }
+
+    // double BE: lon
+    {
+        uint8_t tmp[8];
+        memcpy(tmp, &lon, 8);
+        *p++ = tmp[7]; *p++ = tmp[6]; *p++ = tmp[5]; *p++ = tmp[4];
+        *p++ = tmp[3]; *p++ = tmp[2]; *p++ = tmp[1]; *p++ = tmp[0];
+    }
+
+    // finalize length
+    appDataSize = (uint8_t)(p - appData);
+
+    // --- Debug print --------------------------------------------------------------
+    Serial.print("Flow=");  Serial.print(dir_deg);
+    Serial.print(" deg, Level=");  Serial.print(level_mm);
+    Serial.print(" mm, Temp=");    Serial.print(temp_cx100 / 100.0, 2);
+    Serial.print(" C, LAT=");      Serial.print(lat, 7);
+    Serial.print(", LON=");        Serial.println(lon, 7);
+
+    return appDataSize;
 }
 
 /* -------------------- TFT -------------------- */
@@ -158,10 +161,11 @@ static void draw_status() {
 
   st7735.st7735_fill_screen(ST7735_BLACK);
 
-  String latStr = "GPS LAT: " + String(GPS.location.lat(), 6);
-  String lonStr = "GPS LON: " + String(GPS.location.lng(), 6);
-  st7735.st7735_write_str(0, 0, latStr);
-  st7735.st7735_write_str(0, 38, lonStr);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "GPS LAT: %.6f", GPS.location.lat());
+  st7735.st7735_write_str(0, 0, buf);
+  snprintf(buf, sizeof(buf), "GPS LON: %.6f", GPS.location.lng());
+  st7735.st7735_write_str(0, 38, buf);
 }
 
 /* -------------------- Setup & Loop -------------------- */
@@ -198,9 +202,14 @@ void loop() {
 
     case DEVICE_STATE_SEND:
       {
+        if (!GPS.location.isValid()) {
+          Serial.println("invalid GPS");
+          break;
+        }
+        Serial.printf("valid GPS, lat: %lf, lon: %lf\n", GPS.location.lat(), GPS.location.lng());
+
         prepareTxFrame(appPort);
         LoRaWAN.send();
-        dumpUplink(appData, appDataSize, appPort);
 
         deviceState = DEVICE_STATE_CYCLE;
         break;
