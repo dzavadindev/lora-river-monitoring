@@ -81,72 +81,28 @@ static int prepareTxFrame(uint8_t port)
 {
     simulator();
 
-    // ------ Collect simulated values and clamp ---------------------------
-    uint32_t raw_dir   = (uint32_t)g_flow_dir_deg;      // will clamp to [0..65535]
-    uint32_t raw_level = (uint32_t)g_water_level_mm;    // will clamp to [0..65535]
-    int32_t  raw_tc100 = (int32_t)g_water_temp_c_x100;  // will clamp to [-32768..32767]
-
-    uint16_t dir_deg   = (raw_dir   > 65535u) ? 65535u : (uint16_t)raw_dir;
-    uint16_t level_mm  = (raw_level > 65535u) ? 65535u : (uint16_t)raw_level;
-
-    // Temp guard, in case random is too much
-    int16_t temp_cx100;
-    if (raw_tc100 >  32767) temp_cx100 =  32767;
-    else if (raw_tc100 < -32768) temp_cx100 = -32768;
-    else temp_cx100 = (int16_t)raw_tc100;
+    // ------ collect simulated values ---------------------------
+    uint8_t flow = (uint8_t)g_flow_dir_deg;
+    int8_t temp = (int8_t)g_water_temp_c_x100;
+    uint8_t levl = (uint8_t)g_water_level_mm;
 
     double lat = GPS.location.lat();
     double lon = GPS.location.lng();
 
-    // --- required size & bounds check ----------------------------
-    const size_t NEED = (2 + 2 + 2) + (8 + 8); // 3*u16 + 2*double = 22 bytes
-    const size_t CAP  = sizeof(appData);
-    if (NEED > CAP) {
-        // Not enough buffer space
-        return -1;
-    }
-
-    // --- encode (big-endian) -----------------------------------------------------
+    // --- encode  -----------------------------------------------------
     uint8_t *p = appData;
 
-    // u16 BE: dir
-    *p++ = (uint8_t)((dir_deg  >> 8) & 0xFF);
-    *p++ = (uint8_t)( dir_deg        & 0xFF);
+    *p++ = temp & 0xFF;
+    *p++ = levl & 0xFF;
+    *p++ = flow & 0xFF;
 
-    // u16 BE: level
-    *p++ = (uint8_t)((level_mm >> 8) & 0xFF);
-    *p++ = (uint8_t)( level_mm       & 0xFF);
-
-    // i16 BE: temp x100
-    *p++ = (uint8_t)(((uint16_t)temp_cx100 >> 8) & 0xFF);
-    *p++ = (uint8_t)( (uint16_t)temp_cx100       & 0xFF);
-
-    // double BE: lat
-    {
-        uint8_t tmp[8];
-        memcpy(tmp, &lat, 8);
-        *p++ = tmp[7]; *p++ = tmp[6]; *p++ = tmp[5]; *p++ = tmp[4];
-        *p++ = tmp[3]; *p++ = tmp[2]; *p++ = tmp[1]; *p++ = tmp[0];
-    }
-
-    // double BE: lon
-    {
-        uint8_t tmp[8];
-        memcpy(tmp, &lon, 8);
-        *p++ = tmp[7]; *p++ = tmp[6]; *p++ = tmp[5]; *p++ = tmp[4];
-        *p++ = tmp[3]; *p++ = tmp[2]; *p++ = tmp[1]; *p++ = tmp[0];
-    }
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%+.6f,%+.6f", lat, lon);
+    memcpy(p, buf, len);
+    p += len;
 
     // finalize length
     appDataSize = (uint8_t)(p - appData);
-
-    // --- Debug print --------------------------------------------------------------
-    Serial.print("Flow=");  Serial.print(dir_deg);
-    Serial.print(" deg, Level=");  Serial.print(level_mm);
-    Serial.print(" mm, Temp=");    Serial.print(temp_cx100 / 100.0, 2);
-    Serial.print(" C, LAT=");      Serial.print(lat, 7);
-    Serial.print(", LON=");        Serial.println(lon, 7);
-
     return appDataSize;
 }
 
