@@ -1,5 +1,7 @@
 /* Heltec Automation LoRaWAN – EU868 (Europe/TTN) preset */
 #include <stdlib.h>
+#include <time.h>
+
 #include "LoRaWan_APP.h"
 #include "Arduino.h"
 #include "HT_TinyGPS++.h"  // Heltec's TinyGPS++ wrapper
@@ -60,6 +62,15 @@ static void gps_feed() {
   }
 }
 
+static bool gps_timestamp_string(char out15[15]) {
+  if (!GPS.date.isValid() || !GPS.time.isValid()) return false;
+  if (GPS.time.age() > 1500) return false;
+  snprintf(out15, 15, "%02d%02d%04d%02d%02d%02d",
+           GPS.date.day(), GPS.date.month(), GPS.date.year(),
+           GPS.time.hour(), GPS.time.minute(), GPS.time.second());
+  return true;
+}
+
 /* -------------------- Simulated water characteristics -------------------- */
 static int g_flow_dir_deg = 90;
 static int g_water_level_mm = 120;
@@ -92,9 +103,17 @@ static int prepareTxFrame(uint8_t port)
     // --- encode  -----------------------------------------------------
     uint8_t *p = appData;
 
-    *p++ = temp & 0xFF;
-    *p++ = levl & 0xFF;
     *p++ = flow & 0xFF;
+    *p++ = levl & 0xFF;
+    *p++ = (uint8_t)temp;
+
+    char ts[15];
+    if (gps_timestamp_string(ts)) {
+        memcpy(p, ts, 14);
+    } else {
+        memset(p, '0', 14);
+    }
+    p += 14;
 
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%+.6f,%+.6f", lat, lon);
