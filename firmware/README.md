@@ -20,9 +20,10 @@ A minimal LoRaWAN sensor for the Heltec ESP32 Tracker that sends simulated water
 
 Packet structure is as follows
 
-Index   |Size |Name              |Type  |
-0	    |1	  |flow_deg	         |uint8	|
-1	    |1	  |water_level_mm	 |uint8	|
-2	    |1	  |water_temp_c_x100 |int8	|
-3..16   |14	  |timestamp_utc	 |ASCII	"ddMMyyyyhhmmss" (no separators), UTC |
-17..end |18-21|latitude,longitude|ASCII	"%+.6f,%+.6f" (comma-separated) |
+|Index   |Size |Name              |Type  |
+| - | - | - | - |
+|0	    |1	  |flow_deg	         |uint8	|
+|1	    |1	  |water_level_mm	 |uint8	|
+|2	    |1	  |water_temp_c_x100 |int8	|
+|3..16   |14	  |timestamp_utc	 |ASCII	"ddMMyyyyhhmmss" (no separators), UTC |
+|17..end |18-21|latitude,longitude|ASCII	"%+.6f,%+.6f" (comma-separated) |
