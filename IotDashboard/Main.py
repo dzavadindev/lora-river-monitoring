@@ -1,6 +1,4 @@
-# app.py — Streamlit + MQTT (non-blocking) using new mqtt.py (CSV bootstrap on connect)
-
-import os, ssl, time, json
+import os, time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -14,12 +12,12 @@ from mqtt import create_client, start, stop  # <-- use the new mqtt.py
 
 # ---------- config ----------
 load_dotenv(find_dotenv(usecwd=True))
-HOST   = os.getenv("MQTT_HOST", "localhost")
-PORT   = int(os.getenv("MQTT_PORT", "8883"))      # 1883 no TLS, 8883 TLS
-USER   = os.getenv("MQTT_USERNAME", "")
-PASS   = os.getenv("MQTT_PASSWORD", "")
-TOPIC  = os.getenv("MQTT_TOPIC", "test/topic")
-QOS    = int(os.getenv("MQTT_QOS", "0"))
+HOST     = os.getenv("MQTT_HOST", "localhost")
+PORT     = int(os.getenv("MQTT_PORT", "8883"))      # 1883 no TLS, 8883 TLS
+USER     = os.getenv("MQTT_USERNAME", "")
+PASS     = os.getenv("MQTT_PASSWORD", "")
+TOPIC    = os.getenv("MQTT_TOPIC", "test/topic")
+QOS      = int(os.getenv("MQTT_QOS", "0"))
 CSV_PATH = os.getenv("MSG_CSV_PATH", "ttn_messages.csv")  # CSV used for bootstrap on connect
 
 # ---------- streamlit setup ----------
@@ -35,14 +33,12 @@ if "tbl_inited" not in st.session_state:
     init_table(max_rows=5000)
     st.session_state.tbl_inited = True
 
-# ---------- MQTT callbacks (no Streamlit calls here) ----------
 def on_message(client: mqtt.Client, userdata, msg):
     # lightweight status
-    client.msg_count = getattr(client, "msg_count", 0) + 1
+    client.msg_count  = getattr(client, "msg_count", 0) + 1
     client.last_topic = msg.topic
-    client.last_seen = time.time()
-
-    # push into the shared in-memory DF (data_table)
+    client.last_seen  = time.time()
+    # push payload into the shared in-memory DF (data_table)
     add_ttn_message(msg.payload)
 
 # ---------- create+start MQTT client once ----------
@@ -71,11 +67,11 @@ st.subheader("Connection")
 st.write(f"**Broker**: `{HOST}:{PORT}`")
 st.write(f"**Topic**:  `{TOPIC}`")
 st.metric("Connected", "Yes" if getattr(client, "connected_flag", False) else "No")
-st.metric("Last RC", getattr(client, "last_rc", "—") if client.last_rc is not None else "—")
+
 st.metric("Messages", getattr(client, "msg_count", 0))
 st.metric(
     "Last seen",
-    datetime.fromtimestamp(client.last_seen, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    datetime.fromtimestamp(getattr(client, "last_seen", 0), tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
     if getattr(client, "last_seen", None) else "—"
 )
 st.write("Last topic:", getattr(client, "last_topic", "—"))
@@ -92,12 +88,33 @@ if df.empty:
     st.info("Waiting for messages…")
 else:
     df = df.copy()
-    df["ts_local"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("Europe/Amsterdam")
+
+    # Ensure base schema types (data_table already enforces columns)
+    # 1) Parse UTC ts and make local display column
+    df["ts"] = pd.to_datetime(df.get("ts"), utc=True, errors="coerce")
+    df["ts_local"] = df["ts"].dt.tz_convert("Europe/Amsterdam")
+
+
+
+    # 2) Derived numeric columns for convenience
+    df["temp_c"]        = pd.to_numeric(df.get("water_temp_c"), errors="coerce")
+    df["water_mm"]      = pd.to_numeric(df.get("water_level_mm"), errors="coerce")
+    df["direction_deg"] = pd.to_numeric(df.get("flow_deg"), errors="coerce")
+    df["lat"]           = pd.to_numeric(df.get("latitude"), errors="coerce")
+    df["lon"]           = pd.to_numeric(df.get("longitude"), errors="coerce")
+
+    # Optional: hide rows missing payload ts (NaT)
+    if st.sidebar.toggle("Hide rows with missing payload timestamp", value=True):
+        df = df[df["ts"].notna()]
+
+    # Only select columns that actually exist (prevents KeyError)
+    wanted = ["ts_local", "device_id", "temp_c", "water_mm", "direction_deg", "lat", "lon"]
+    have   = [c for c in wanted if c in df.columns]
+
     st.dataframe(
-        df.sort_values("ts", ascending=False).head(200)[
-            ["ts_local", "device_id", "temp_c", "water_m", "water_mm", "direction_deg", "lat", "lon"]
-        ],
-        height=420
+        df.sort_values("ts", ascending=False).head(200)[have],
+        height=420,
+        width="stretch",   # <-- replaced use_container_width=True
     )
 
 # Optional manual disconnect

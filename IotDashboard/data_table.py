@@ -4,12 +4,38 @@ from typing import Any, Dict, Optional, Iterable, List, Tuple
 import threading, json
 import pandas as pd
 from csv_store import append_row_csv
+
 # ----------------- globals / schema -----------------
 _df: Optional[pd.DataFrame] = None
 _lock = threading.Lock()
 _max_rows = 5000
 
-COLUMNS = ["ts","device_id","temp_c","water_m","water_mm","direction_deg","lat","lon"]
+# NEW canonical schema (renamed columns)
+COLUMNS = [
+    "ts",
+    "device_id",
+    "water_temp_c",
+    "water_level_mm",
+    "flow_deg",
+    "latitude",
+    "longitude",
+]
+
+VERBOSE_LOG = True  # flip to False to silence prints
+
+def _log(*args):
+    if VERBOSE_LOG:
+        print(*args, flush=True)
+
+def _preview_bytes(b, limit=2000):
+    try:
+        s = b.decode("utf-8", "replace")
+    except Exception:
+        s = str(b)
+    if len(s) > limit:
+        s = s[:limit] + f"... <+{len(s)-limit} chars>"
+    return s
+
 
 # ----------------- helpers -----------------
 def _get(d: Dict, path: str, default=None):
@@ -57,21 +83,20 @@ def _root(msg: dict) -> dict:
 
 def _extract_latlon(msg: dict) -> tuple[Optional[float], Optional[float]]:
     r = _root(msg)
+    # locations block (TTN may place GPS here)
     locs = r.get("uplink_message", {}).get("locations", {}) or {}
-    # TTN sample uses "frm-payload"
     fp = locs.get("frm-payload")
     if isinstance(fp, dict):
-        lat = fp.get("latitude")
-        lon = fp.get("longitude")
+        lat = fp.get("latitude"); lon = fp.get("longitude")
         try:
             if lat is not None and lon is not None:
                 return float(lat), float(lon)
         except Exception:
             pass
-    # fallback to decoded_payload if coords might be there
+    # fallback to decoded_payload variants
     dp = r.get("uplink_message", {}).get("decoded_payload", {}) or {}
-    lat = dp.get("lat") or dp.get("latitude")
-    lon = dp.get("lon") or dp.get("longitude")
+    lat = _first(dp.get("latitude"), dp.get("lat"))
+    lon = _first(dp.get("longitude"), dp.get("lon"))
     try:
         if lat is not None and lon is not None:
             return float(lat), float(lon)
@@ -80,14 +105,13 @@ def _extract_latlon(msg: dict) -> tuple[Optional[float], Optional[float]]:
     return None, None
 
 def _normalize_row(msg: dict) -> dict:
-    """Return normalized fields you want, robust to inner/outer TTN shapes."""
+    """Return normalized fields (new schema), robust to inner/outer TTN shapes + old/new key names."""
     r = _root(msg)
 
     # Timestamp preference
     ts_pref = _first(
         r.get("uplink_message", {}).get("received_at"),
-        r.get("received_at"),
-        msg.get("time"),
+        
     )
     ts = _coerce_ts(ts_pref)
 
@@ -97,25 +121,43 @@ def _normalize_row(msg: dict) -> dict:
         _get(msg, "identifiers.0.device_ids.device_id"),
     )
 
-    # Decoded payload
-    dp = r.get("uplink_message", {}).get("decoded_payload", {}) or {}
-    temp_c        = dp.get("temp_c")
-    water_m       = dp.get("water_m")
-    water_mm      = dp.get("water_mm")
-    direction_deg = dp.get("direction_deg")
 
-    # Location
-    lat, lon = _extract_latlon(msg)
+    dp = r.get("uplink_message", {}).get("decoded_payload", {}) or {}
+
+    # temperature (°C)
+    water_temp_c = _first(
+        dp.get("water_temp_c"),
+        dp.get("temp_c"),
+        dp.get("temperature_c"),
+    )
+
+
+    water_level_mm = _first(
+        dp.get("water_level_mm"),
+        dp.get("water_mm"),
+    )
+    water_m = _first(dp.get("water_m"), dp.get("level_m"))
+    if water_level_mm is None and isinstance(water_m, (int, float)):
+        water_level_mm = water_m * 1000.0
+
+    # direction in degrees
+    flow_deg = _first(
+        dp.get("flow_deg"),
+        dp.get("direction_deg"),
+        dp.get("flow"),
+    )
+
+    # location
+    latitude, longitude = _extract_latlon(msg)
 
     return {
         "ts": ts,
         "device_id": device_id,
-        "temp_c": temp_c,
-        "water_m": water_m,
-        "water_mm": water_mm,
-        "direction_deg": direction_deg,
-        "lat": lat,
-        "lon": lon,
+        "water_temp_c": water_temp_c,
+        "water_level_mm": water_level_mm,
+        "flow_deg": flow_deg,
+        "latitude": latitude,
+        "longitude": longitude,
     }
 
 # ----------------- core table API -----------------
@@ -150,8 +192,12 @@ def add_ttn_message(msg: Any, ts: Any = None) -> None:
         except Exception:
             row = _fill_row({
                 "ts": _coerce_ts(ts),
-                "device_id": None, "temp_c": None, "water_m": None,
-                "water_mm": None, "direction_deg": None, "lat": None, "lon": None
+                "device_id": None,
+                "water_temp_c": None,
+                "water_level_mm": None,
+                "flow_deg": None,
+                "latitude": None,
+                "longitude": None,
             })
             _append_row(row)
             return
@@ -161,8 +207,12 @@ def add_ttn_message(msg: Any, ts: Any = None) -> None:
         except Exception:
             row = _fill_row({
                 "ts": _coerce_ts(ts),
-                "device_id": None, "temp_c": None, "water_m": None,
-                "water_mm": None, "direction_deg": None, "lat": None, "lon": None
+                "device_id": None,
+                "water_temp_c": None,
+                "water_level_mm": None,
+                "flow_deg": None,
+                "latitude": None,
+                "longitude": None,
             })
             _append_row(row)
             return
@@ -172,8 +222,10 @@ def add_ttn_message(msg: Any, ts: Any = None) -> None:
     if ts is not None:
         row["ts"] = _coerce_ts(ts)
 
-    append_row_csv("./ttn_messages.csv",row)
+    append_row_csv("./ttn_messages.csv", row)
     _append_row(row)
+
+
 
 def add_many_ttn(msgs: Iterable[Any]) -> int:
     """Append many TTN messages efficiently with one concat (columns fixed)."""
@@ -251,7 +303,8 @@ def add_normalized_many(rows: Iterable[dict]) -> int:
     global _df
     df_new = pd.DataFrame(rows, columns=COLUMNS)
     df_new["ts"] = pd.to_datetime(df_new["ts"], utc=True, errors="coerce")
-    for col in ["temp_c","water_m","water_mm","direction_deg","lat","lon"]:
+    # numeric coercions for new schema
+    for col in ["water_temp_c", "water_level_mm", "flow_deg", "latitude", "longitude"]:
         if col in df_new.columns:
             df_new[col] = pd.to_numeric(df_new[col], errors="coerce")
     with _lock:

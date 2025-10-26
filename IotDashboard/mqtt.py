@@ -9,9 +9,9 @@ from paho.mqtt import client as mqtt
 
 # these two are your own modules
 from csv_store import load_csv
-from data_table import add_normalized_many  # or upsert_normalized_many if you added it
+from data_table import add_normalized_many
 
-# module-level guard so CSV isn't re-ingested every reconnect/process-wide
+
 _csv_ingested_once = False
 
 def create_client(

@@ -30,15 +30,17 @@ if df.empty:
     st.info("No data yet.")
     st.stop()
 
+# Map NEW schema -> convenience names used by plots
+df["temp_c"]        = pd.to_numeric(df.get("water_temp_c"), errors="coerce")
+df["water_mm"]      = pd.to_numeric(df.get("water_level_mm"), errors="coerce")
+df["direction_deg"] = pd.to_numeric(df.get("flow_deg"), errors="coerce")
+df["lat"]           = pd.to_numeric(df.get("latitude"), errors="coerce")
+df["lon"]           = pd.to_numeric(df.get("longitude"), errors="coerce")
+
 # timestamps (UTC -> local tz column)
 df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
 df = df.dropna(subset=["ts"])
 df["ts_local"] = df["ts"].dt.tz_convert("Europe/Amsterdam")
-
-# numeric coercion
-for c in ["temp_c", "water_m", "water_mm", "direction_deg", "lat", "lon"]:
-    if c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
 
 # --- filters ---
 min_t = df["ts_local"].min()
@@ -89,7 +91,7 @@ if sub.empty:
 # quick counters (debug)
 st.sidebar.caption(
     f"Rows: {len(sub)} • temp: {sub['temp_c'].notna().sum()} • "
-    f"water_m: {sub['water_m'].notna().sum()} • dir: {sub['direction_deg'].notna().sum()}"
+    f"water_mm: {sub['water_mm'].notna().sum()} • dir: {sub['direction_deg'].notna().sum()}"
 )
 
 # --- resample options (codes + window delta) ---
@@ -127,11 +129,11 @@ def summarize_numeric(s: pd.Series) -> dict:
 
 # --- resample per device + overall mean ---
 sub_idx = sub.set_index("ts_plot").sort_index()
-agg_num = {"temp_c": "mean", "water_m": "mean", "water_mm": "mean"}
+agg_num = {"temp_c": "mean", "water_mm": "mean"}
 
 if resample_code is None:
     # raw points, no resample
-    per_dev = sub[["ts_plot","device_id","temp_c","water_m","water_mm","direction_deg"]].copy()
+    per_dev = sub[["ts_plot","device_id","temp_c","water_mm","direction_deg"]].copy()
 else:
     per_dev = (
         sub_idx.groupby("device_id")
@@ -140,14 +142,13 @@ else:
                .reset_index()
     )
     # If resample produced all-NaNs (very sparse), fall back to raw points
-    if per_dev[["temp_c","water_m","water_mm","direction_deg"]].notna().sum().sum() == 0:
-        per_dev = sub[["ts_plot","device_id","temp_c","water_m","water_mm","direction_deg"]].copy()
+    if per_dev[["temp_c","water_mm","direction_deg"]].notna().sum().sum() == 0:
+        per_dev = sub[["ts_plot","device_id","temp_c","water_mm","direction_deg"]].copy()
 
 overall = (
     per_dev.groupby("ts_plot")
            .agg({
                "temp_c": "mean",
-               "water_m": "mean",
                "water_mm": "mean",
                "direction_deg": circular_mean_deg
            })
@@ -165,18 +166,15 @@ else:
     latest_slice = sub_idx.loc[idx_max - pd.to_timedelta(window_delta):].reset_index()
 
 t_stats  = summarize_numeric(latest_slice.get("temp_c", pd.Series(dtype=float)))
-w_stats  = summarize_numeric(latest_slice.get("water_m", pd.Series(dtype=float)))
 mm_stats = summarize_numeric(latest_slice.get("water_mm", pd.Series(dtype=float)))
 dir_mean = circular_mean_deg(latest_slice.get("direction_deg", pd.Series(dtype=float)))
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("Temp mean (°C)", f"{t_stats['mean']:.2f}" if t_stats["mean"] is not None else "—",
           f"min {t_stats['min']:.2f} • max {t_stats['max']:.2f}" if t_stats["count"] else "")
-c2.metric("Water mean (m)", f"{w_stats['mean']:.3f}" if w_stats["mean"] is not None else "—",
-          f"min {w_stats['min']:.3f} • max {w_stats['max']:.3f}" if w_stats["count"] else "")
-c3.metric("Water mean (mm)", f"{mm_stats['mean']:.0f}" if mm_stats["mean"] is not None else "—",
+c2.metric("Water mean (mm)", f"{mm_stats['mean']:.0f}" if mm_stats["mean"] is not None else "—",
           f"min {mm_stats['min']:.0f} • max {mm_stats['max']:.0f}" if mm_stats["count"] else "")
-c4.metric("Direction mean (°)", f"{dir_mean:.1f}" if dir_mean is not None else "—")
+c3.metric("Direction mean (°)", f"{dir_mean:.1f}" if dir_mean is not None else "—")
 
 st.markdown("---")
 
@@ -203,7 +201,11 @@ def make_line_chart(field: str, title: str, y_format: str = ""):
             x=alt.X("ts_plot:T", title="Time"),
             y=alt.Y(f"{field}:Q", title=title,
                     axis=alt.Axis(format=y_format) if y_format else alt.Axis()),
-            color=alt.Color("device_id:N", title="Device"),
+            color=alt.Color(
+                "device_id:N",
+                title="Device",
+                legend=alt.Legend(orient="bottom", columns=3, labelLimit=500),  # Extended labelLimit and placed labels under the graph
+            ),
             tooltip=[
                 alt.Tooltip("ts_plot:T", title="Time"),
                 alt.Tooltip("device_id:N", title="Device"),
@@ -296,9 +298,6 @@ def make_line_chart(field: str, title: str, y_format: str = ""):
 st.subheader("Temperature (°C)")
 make_line_chart("temp_c", "Temperature (°C)")
 
-st.subheader("Water level (m)")
-make_line_chart("water_m", "Water level (m)")
-
 st.subheader("Water level (mm)")
 make_line_chart("water_mm", "Water level (mm)")
 
@@ -308,7 +307,9 @@ make_line_chart("direction_deg", "Direction (°)")
 st.markdown("---")
 
 # export (show what you plotted)
-export_df = plot_df.sort_values(["ts_plot","device_id"]).reset_index(drop=True)
+export_df = (plot_df
+             .sort_values(["ts_plot","device_id"])
+             .reset_index(drop=True))
 st.dataframe(export_df.head(500), height=280)
 st.download_button(
     "Download CSV",
