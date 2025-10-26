@@ -10,7 +10,6 @@ _df: Optional[pd.DataFrame] = None
 _lock = threading.Lock()
 _max_rows = 5000
 
-# NEW canonical schema (renamed columns)
 COLUMNS = [
     "ts",
     "device_id",

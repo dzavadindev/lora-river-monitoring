@@ -22,8 +22,7 @@ if df.empty:
     st.info("No data yet — check the main page is connected to MQTT.")
     st.stop()
 
-# --- map NEW schema -> convenience columns used below ---
-# New schema fields: water_temp_c, water_level_mm, flow_deg, latitude, longitude
+# Numeric columns
 df["temp_c"]        = pd.to_numeric(df.get("water_temp_c"), errors="coerce")
 df["water_mm"]      = pd.to_numeric(df.get("water_level_mm"), errors="coerce")
 df["water_m"]       = df["water_mm"] / 1000.0
